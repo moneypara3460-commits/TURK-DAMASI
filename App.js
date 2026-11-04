@@ -41,7 +41,7 @@ function rawMoves(board,side,fromOnly=null,capturesOnly=false){
         const nr=r+dr,nc=c+dc;
         if(inside(nr,nc)&&!board[nr][nc]) moves.push({from:{r,c},to:{r:nr,c:nc},captured:[]});
       }
-      for(const [dr,dc] of dirs){
+      for(const [dr,dc] of [[f,0],[0,1],[0,-1]]){
         const mr=r+dr,mc=c+dc,er=r+2*dr,ec=c+2*dc;
         if(inside(mr,mc)&&inside(er,ec)&&board[mr][mc]&&board[mr][mc].side!==side&&!board[er][ec])
           moves.push({from:{r,c},to:{r:er,c:ec},captured:[{r:mr,c:mc}]});
@@ -50,10 +50,28 @@ function rawMoves(board,side,fromOnly=null,capturesOnly=false){
   }
   return moves;
 }
+function chainBest(board,m,side){
+  const next=applyStep(board,m,side);
+  let best=0;
+  for(const x of rawMoves(next,side,m.to,true)) best=Math.max(best,chainBest(next,x,side));
+  return m.captured.length+best;
+}
+function maxCaptureOnly(board,side,caps){
+  const scored=caps.map(m=>({m,n:chainBest(board,m,side)}));
+  const mx=Math.max(...scored.map(x=>x.n));
+  return scored.filter(x=>x.n===mx).map(x=>x.m);
+}
 function legalMoves(board,side,fromOnly=null){
   const caps=rawMoves(board,side,null,true);
-  if(caps.length) return fromOnly?caps.filter(m=>m.from.r===fromOnly.r&&m.from.c===fromOnly.c):caps;
-  return fromOnly?rawMoves(board,side,fromOnly,false):rawMoves(board,side,null,false);
+  if(caps.length){
+    const best=maxCaptureOnly(board,side,caps);
+    return fromOnly?best.filter(m=>m.from.r===fromOnly.r&&m.from.c===fromOnly.c):best;
+  }
+  return rawMoves(board,side,fromOnly,false);
+}
+function bestFollow(board,side,from){
+  const caps=rawMoves(board,side,from,true);
+  return caps.length?maxCaptureOnly(board,side,caps):[];
 }
 function applyStep(board,move,side){
   const b=clone(board),p=b[move.from.r][move.from.c];
@@ -69,14 +87,19 @@ function completeTurns(board,side){
   function extend(b,m,path){
     const next=applyStep(b,m,side),steps=[...path,m];
     if(m.captured.length){
-      const follow=legalMoves(next,side,m.to).filter(x=>x.captured.length);
+      const follow=rawMoves(next,side,m.to,true);
       if(follow.length){follow.forEach(x=>extend(next,x,steps));return;}
     }
     out.push({steps,board:next,captures:steps.reduce((n,x)=>n+x.captured.length,0)});
   }
-  legalMoves(board,side).forEach(m=>extend(board,m,[]));
-  return out;
+  const caps=rawMoves(board,side,null,true);
+  (caps.length?caps:rawMoves(board,side)).forEach(m=>extend(board,m,[]));
+  if(!out.length) return out;
+  const mx=Math.max(...out.map(t=>t.captures));
+  return out.filter(t=>t.captures===mx);
 }
+const DRAW_LIMIT=100;
+const stepIsProgress=(b,m)=>m.captured.length>0||(!b[m.from.r][m.from.c].king&&m.to.r!==m.from.r);
 function evaluate(board){
   let score=0;
   for(let r=0;r<8;r++)for(let c=0;c<8;c++){
@@ -134,18 +157,22 @@ export default function App(){
   const [boardWidth,setBoardWidth]=useState(0);
   const progress=useRef(new Animated.Value(0)).current;
   const animationLock=useRef(false);
+  const quietRef=useRef(0);
+  const turnProgress=useRef(false);
   const whiteCount=useMemo(()=>countPieces(board,"white"),[board]);
   const blackCount=useMemo(()=>countPieces(board,"black"),[board]);
   const cell=boardWidth/8;
 
   function reset(){
-    animationLock.current=false;setAnimating(null);progress.stopAnimation();progress.setValue(0);
+    animationLock.current=false;quietRef.current=0;turnProgress.current=false;
+    setAnimating(null);progress.stopAnimation();progress.setValue(0);
     setBoard(initialBoard());setSelected(null);setLegal([]);setTurn("white");setMovesCount(0);
     setBusy(false);setChainActive(false);setGameOver(false);setStatus("Sıra sende. İlk hamleni yap!");
   }
   function finishCheck(b){
     if(!countPieces(b,"white")||!legalMoves(b,"white").length){setStatus("Oyun bitti. Yapay zekâ kazandı!");setGameOver(true);return true;}
     if(!countPieces(b,"black")||!legalMoves(b,"black").length){setStatus("Tebrikler! Oyunu kazandın!");setGameOver(true);return true;}
+    if(quietRef.current>=DRAW_LIMIT){setStatus("Berabere! Uzun süredir taş alınmadı ve ilerleme olmadı.");setGameOver(true);return true;}
     return false;
   }
 
@@ -186,6 +213,7 @@ export default function App(){
       if(i<chosen.steps.length-1) await new Promise(r=>setTimeout(r,220));
     }
     setMovesCount(n=>n+1);
+    quietRef.current=(stepIsProgress(b,chosen.steps[0])||chosen.captures>0)?0:quietRef.current+1;
     if(!finishCheck(next)){setTurn("white");setStatus(chosen.captures>1?"Rakip çoklu taş aldı. Sıra sende!":chosen.captures===1?"Rakip taş aldı. Sıra sende!":"Rakip hamlesini yaptı. Sıra sende!");}
     setBusy(false);
   }
@@ -194,14 +222,16 @@ export default function App(){
     if(turn!=="white"||busy||gameOver||animationLock.current)return;
     const piece=board[r][c],target=legal.find(m=>m.to.r===r&&m.to.c===c);
     if(selected&&target){
+      if(stepIsProgress(board,target)) turnProgress.current=true;
       const next=await animateStep(board,target,"white");
-      const more=target.captured.length?legalMoves(next,"white",target.to).filter(m=>m.captured.length):[];
+      const more=target.captured.length?bestFollow(next,"white",target.to):[];
       if(more.length){
         setSelected(target.to);setLegal(more);setChainActive(true);
         setStatus("Güzel! Aynı taşla almaya devam et. Başka taş seçemezsin.");
         return;
       }
       setSelected(null);setLegal([]);setChainActive(false);setMovesCount(n=>n+1);
+      quietRef.current=turnProgress.current?0:quietRef.current+1;turnProgress.current=false;
       if(!finishCheck(next)){setTurn("black");runAI(next);}
       return;
     }
@@ -268,10 +298,12 @@ export default function App(){
       <View style={styles.rules}>
         <Text style={styles.rulesTitle}>NASIL OYNANIR?</Text>
         <Text style={styles.ruleText}>• Beyaz taşlarla sen oynarsın. Taşlar ileri ve yana bir kare gider.</Text>
-        <Text style={styles.ruleText}>• Rakip taşın üzerinden atlayarak taş alırsın. Taş alma zorunludur.</Text>
+        <Text style={styles.ruleText}>• Rakip taşın üzerinden ileri veya yana atlayarak taş alırsın (geri alma sadece vezirde). Taş alma zorunludur.</Text>
+        <Text style={styles.ruleText}>• Birden fazla alma yolu varsa en çok taş alan yolu seçmek zorundasın.</Text>
         <Text style={styles.ruleText}>• Bir taş aldıktan sonra aynı taşla başka alma imkânı varsa devam etmelisin.</Text>
         <Text style={styles.ruleText}>• Son sıraya ulaşan taş vezir olur ve yatay/dikey istediği kadar ilerler.</Text>
         <Text style={styles.ruleText}>• Rakibin tüm taşlarını al veya hamlesiz bırak.</Text>
+        <Text style={styles.ruleText}>• 100 hamle boyunca taş alınmaz ve hiçbir taş ileri gitmezse oyun berabere biter.</Text>
       </View>
       <Text style={styles.footer}>BAĞIMSIZ TÜRK DAMASI • AKICI HAMLE ANİMASYONU</Text>
     </ScrollView>
