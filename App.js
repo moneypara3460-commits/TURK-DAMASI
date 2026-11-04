@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useRef } from "react";
+import React, { useMemo, useState, useRef, useEffect } from "react";
 import {
   View, Text, Pressable, StyleSheet, SafeAreaView, ScrollView,
   StatusBar, Animated, Easing, useWindowDimensions
@@ -142,6 +142,47 @@ function aiChoose(board,difficulty){
   return ranked[0].turn;
 }
 
+const CONFETTI=["#ffd86b","#ff6b6b","#6bd6ff","#9bff8f","#ff9bf0","#ffffff"];
+function Piece({side,king,selected,glow,full}){
+  const white=side==="white";
+  return <View style={[styles.piece,full&&styles.pieceFull,white?styles.whitePiece:styles.blackPiece,king&&styles.kingPiece,selected&&styles.pieceSelected]}>
+    <View style={[styles.pieceInner,white?styles.whiteInner:styles.blackInner,king&&styles.kingInner]}/>
+    <View style={[styles.pieceShine,white?styles.whiteShine:styles.blackShine]}/>
+    {king&&<Text style={[styles.crown,white?styles.whiteCrown:styles.blackCrown]}>♛</Text>}
+    {glow&&<Animated.View pointerEvents="none" style={[styles.winRing,{opacity:glow}]}/>}
+  </View>;
+}
+function Confetti({w,h}){
+  const parts=useRef(Array.from({length:34},(_,i)=>({
+    x:Math.random()*Math.max(w-10,1),size:5+Math.random()*7,delay:Math.random()*1600,dur:2200+Math.random()*1800,
+    color:CONFETTI[i%CONFETTI.length],spin:Math.random()>.5?1:-1,v:new Animated.Value(0)
+  }))).current;
+  useEffect(()=>{
+    const anims=parts.map(p=>Animated.loop(Animated.timing(p.v,{toValue:1,duration:p.dur,delay:p.delay,easing:Easing.linear,useNativeDriver:true})));
+    anims.forEach(a=>a.start());
+    return()=>anims.forEach(a=>a.stop());
+  },[]);
+  return <View pointerEvents="none" style={StyleSheet.absoluteFill}>{parts.map((p,i)=>
+    <Animated.View key={i} style={{position:"absolute",left:p.x,top:-20,width:p.size,height:p.size*1.6,backgroundColor:p.color,borderRadius:2,
+      transform:[
+        {translateY:p.v.interpolate({inputRange:[0,1],outputRange:[0,h+40]})},
+        {translateX:p.v.interpolate({inputRange:[0,.5,1],outputRange:[0,14*p.spin,-14*p.spin]})},
+        {rotate:p.v.interpolate({inputRange:[0,1],outputRange:["0deg",(p.spin*720)+"deg"]})}
+      ]}}/>)}</View>;
+}
+function ResultBanner({result,onAgain}){
+  const pop=useRef(new Animated.Value(0)).current;
+  useEffect(()=>{Animated.spring(pop,{toValue:1,friction:5,tension:70,useNativeDriver:true}).start();},[]);
+  return <View pointerEvents="box-none" style={styles.bannerWrap}>
+    <Animated.View style={[styles.banner,result.party&&styles.bannerWin,{opacity:pop,transform:[{scale:pop.interpolate({inputRange:[0,1],outputRange:[.4,1]})}]}]}>
+      <Text style={styles.bannerEmoji}>{result.emoji}</Text>
+      <Text style={styles.bannerTitle}>{result.title}</Text>
+      {!!result.sub&&<Text style={styles.bannerSub}>{result.sub}</Text>}
+      <Pressable onPress={onAgain} style={styles.bannerBtn}><Text style={styles.bannerBtnText}>↻ Tekrar Oyna</Text></Pressable>
+    </Animated.View>
+  </View>;
+}
+
 export default function App(){
   const [board,setBoard]=useState(initialBoard);
   const [selected,setSelected]=useState(null);
@@ -154,22 +195,40 @@ export default function App(){
   const [busy,setBusy]=useState(false);
   const [chainActive,setChainActive]=useState(false);
   const [gameOver,setGameOver]=useState(false);
+  const [result,setResult]=useState(null);
   const [animating,setAnimating]=useState(null);
   const [boardWidth,setBoardWidth]=useState(0);
   const progress=useRef(new Animated.Value(0)).current;
   const animationLock=useRef(false);
   const quietRef=useRef(0);
   const turnProgress=useRef(false);
+  const pulse=useRef(new Animated.Value(0)).current;
   const whiteCount=useMemo(()=>countPieces(board,"white"),[board]);
   const blackCount=useMemo(()=>countPieces(board,"black"),[board]);
   const cell=boardWidth/8;
   const pvp=mode==="pvp";
+  useEffect(()=>{
+    if(!result||!result.party){pulse.setValue(0);return;}
+    const loop=Animated.loop(Animated.sequence([
+      Animated.timing(pulse,{toValue:1,duration:700,easing:Easing.inOut(Easing.quad),useNativeDriver:true}),
+      Animated.timing(pulse,{toValue:.2,duration:700,easing:Easing.inOut(Easing.quad),useNativeDriver:true})
+    ]));
+    loop.start();
+    return()=>loop.stop();
+  },[result]);
+  function winResult(winner){
+    if(pvp) return {winner,party:true,emoji:"🏆",title:winner==="white"?"BEYAZ KAZANDI!":"SİYAH KAZANDI!",sub:"Tebrikler, harika bir oyundu!"};
+    return winner==="white"
+      ?{winner,party:true,emoji:"🏆",title:"TEBRİKLER, KAZANDIN!",sub:"Yapay zekâyı yendin."}
+      :{winner,party:false,emoji:"🤖",title:"YAPAY ZEKÂ KAZANDI",sub:"Rövanş için tekrar oyna!"};
+  }
+  const drawResult={winner:null,party:false,emoji:"🤝",title:"BERABERE",sub:"Kimse kazanamadı."};
   
   function reset(m=mode){
     animationLock.current=false;quietRef.current=0;turnProgress.current=false;
     setAnimating(null);progress.stopAnimation();progress.setValue(0);
     setBoard(initialBoard());setSelected(null);setLegal([]);setTurn("white");setMovesCount(0);
-    setBusy(false);setChainActive(false);setGameOver(false);
+    setBusy(false);setChainActive(false);setGameOver(false);setResult(null);
     setStatus(m==="pvp"?"2 kişilik oyun. Beyaz başlar, sıra Beyazda!":"Sıra sende. İlk hamleni yap!");
   }
   function switchMode(m){
@@ -177,13 +236,13 @@ export default function App(){
     setMode(m);reset(m);
   }
   function finishCheck(b){
-    if(!countPieces(b,"white")||!legalMoves(b,"white").length){setStatus(pvp?"Oyun bitti. Siyah kazandı! 🎉":"Oyun bitti. Yapay zekâ kazandı!");setGameOver(true);return true;}
-    if(!countPieces(b,"black")||!legalMoves(b,"black").length){setStatus(pvp?"Oyun bitti. Beyaz kazandı! 🎉":"Tebrikler! Oyunu kazandın!");setGameOver(true);return true;}
+    if(!countPieces(b,"white")||!legalMoves(b,"white").length){setStatus(pvp?"Oyun bitti. Siyah kazandı! 🎉":"Oyun bitti. Yapay zekâ kazandı!");setResult(winResult("black"));setGameOver(true);return true;}
+    if(!countPieces(b,"black")||!legalMoves(b,"black").length){setStatus(pvp?"Oyun bitti. Beyaz kazandı! 🎉":"Tebrikler! Oyunu kazandın!");setResult(winResult("white"));setGameOver(true);return true;}
     const wp=b.flat().filter(p=>p&&p.side==="white"),bp=b.flat().filter(p=>p&&p.side==="black");
     if(wp.length===1&&bp.length===1&&wp[0].king&&bp[0].king&&!rawMoves(b,"white",null,true).length&&!rawMoves(b,"black",null,true).length){
-      setStatus("Berabere! Bir vezir bir vezire karşı kaldı, kimse kazanamaz.");setGameOver(true);return true;
+      setStatus("Berabere! Bir vezir bir vezire karşı kaldı, kimse kazanamaz.");setResult(drawResult);setGameOver(true);return true;
     }
-    if(quietRef.current>=DRAW_LIMIT){setStatus("Berabere! Uzun süredir taş alınmadı ve ilerleme olmadı.");setGameOver(true);return true;}
+    if(quietRef.current>=DRAW_LIMIT){setStatus("Berabere! Uzun süredir taş alınmadı ve ilerleme olmadı.");setResult(drawResult);setGameOver(true);return true;}
     return false;
   }
 
@@ -215,7 +274,7 @@ export default function App(){
     setBusy(true);setStatus("Yapay zekâ hamlesini hesaplıyor...");
     await new Promise(r=>setTimeout(r,500));
     const chosen=aiChoose(b,difficulty);
-    if(!chosen){setStatus("Tebrikler! Oyunu kazandın!");setGameOver(true);setBusy(false);return;}
+    if(!chosen){setStatus("Tebrikler! Oyunu kazandın!");setResult(winResult("white"));setGameOver(true);setBusy(false);return;}
     let next=b;
     for(let i=0;i<chosen.steps.length;i++){
       const step=chosen.steps[i];
@@ -294,19 +353,15 @@ export default function App(){
             const isLegal=legal.some(m=>m.to.r===r&&m.to.c===c);
             const isMovingSource=animating?.from.r===r&&animating?.from.c===c;
             return <Pressable key={c} onPress={()=>tapSquare(r,c)} style={[styles.square,isLight?styles.lightSquare:styles.darkSquare,isSelected&&styles.selectedSquare,isLegal&&styles.legalSquare]}>
-              {piece&&!isMovingSource&&<View style={[styles.piece,piece.side==="white"?styles.whitePiece:styles.blackPiece,isSelected&&styles.pieceSelected]}>
-                <View style={[styles.pieceShine,piece.side==="white"?styles.whiteShine:styles.blackShine]}/>
-                {piece.king&&<Text style={[styles.crown,piece.side==="white"?styles.whiteCrown:styles.blackCrown]}>♛</Text>}
-              </View>}
+              {piece&&!isMovingSource&&<Piece side={piece.side} king={piece.king} selected={isSelected} glow={result&&result.party&&result.winner===piece.side?pulse:null}/>}
               {isLegal&&!piece&&<View style={styles.moveDot}/>}
             </Pressable>;
           })}</View>)}
           {animating&&cell>0&&<Animated.View pointerEvents="none" style={[movingStyle,{transform:[{translateX},{translateY}]}]}>
-            <View style={[styles.piece,styles.animatedPiece,animating.piece.side==="white"?styles.whitePiece:styles.blackPiece]}>
-              <View style={[styles.pieceShine,animating.piece.side==="white"?styles.whiteShine:styles.blackShine]}/>
-              {animating.piece.king&&<Text style={[styles.crown,animating.piece.side==="white"?styles.whiteCrown:styles.blackCrown]}>♛</Text>}
-            </View>
+            <View style={styles.animatedWrap}><Piece full side={animating.piece.side} king={animating.piece.king}/></View>
           </Animated.View>}
+          {result&&result.party&&boardWidth>0&&<Confetti key={"c"+movesCount} w={boardWidth} h={boardWidth}/>}
+          {result&&<ResultBanner key={"b"+movesCount} result={result} onAgain={()=>reset()}/>}
         </View>
       </View>
       <View style={styles.statusBox}><Text style={styles.statusIcon}>✦</Text><Text style={styles.statusText}>{status}</Text></View>
@@ -358,13 +413,30 @@ const styles=StyleSheet.create({
   row:{flexDirection:"row"},square:{width:"12.5%",aspectRatio:1,alignItems:"center",justifyContent:"center"},
   lightSquare:{backgroundColor:"#d9bd8c"},darkSquare:{backgroundColor:"#79502f"},
   selectedSquare:{backgroundColor:"#d5b04f"},legalSquare:{backgroundColor:"#9db17a"},
-  piece:{width:"76%",height:"76%",borderRadius:100,alignItems:"center",justifyContent:"center",borderWidth:2,shadowColor:"#000",shadowOpacity:.45,shadowRadius:3,elevation:4},
-  animatedPiece:{width:"100%",height:"100%"},whitePiece:{backgroundColor:"#f2e7cf",borderColor:"#b8a47f"},
-  blackPiece:{backgroundColor:"#202522",borderColor:"#090d0b"},
-  pieceShine:{position:"absolute",top:"12%",left:"18%",width:"27%",height:"15%",borderRadius:20,transform:[{rotate:"-28deg"}]},
-  whiteShine:{backgroundColor:"#fff9eb"},blackShine:{backgroundColor:"#67716a"},
-  pieceSelected:{borderColor:"#f7d66d",borderWidth:3},crown:{fontSize:19,fontWeight:"900"},
-  whiteCrown:{color:"#9c722d"},blackCrown:{color:"#e2bd65"},
+  piece:{width:"76%",height:"76%",borderRadius:100,alignItems:"center",justifyContent:"center",borderWidth:2,shadowColor:"#000",shadowOpacity:.55,shadowRadius:4,shadowOffset:{width:0,height:3},elevation:6},
+  pieceFull:{width:"100%",height:"100%"},
+  animatedWrap:{width:"100%",height:"100%",alignItems:"center",justifyContent:"center"},
+  whitePiece:{backgroundColor:"#e6d7b6",borderColor:"#a38f64"},
+  blackPiece:{backgroundColor:"#161a18",borderColor:"#050706"},
+  pieceInner:{position:"absolute",width:"68%",height:"68%",borderRadius:100,borderWidth:1.5},
+  whiteInner:{backgroundColor:"#f7eed9",borderColor:"#c9b78d"},
+  blackInner:{backgroundColor:"#262c29",borderColor:"#47514b"},
+  kingPiece:{borderColor:"#d8ad4c",shadowColor:"#f0c040",shadowOpacity:.9,shadowRadius:7},
+  kingInner:{borderColor:"#d8ad4c",borderWidth:2},
+  pieceShine:{position:"absolute",top:"11%",left:"17%",width:"28%",height:"13%",borderRadius:20,transform:[{rotate:"-28deg"}]},
+  whiteShine:{backgroundColor:"#fffdf5"},blackShine:{backgroundColor:"#7a867f"},
+  pieceSelected:{borderColor:"#f7d66d",borderWidth:3,shadowColor:"#f7d66d",shadowOpacity:1,shadowRadius:8},
+  crown:{fontSize:20,fontWeight:"900",textShadowColor:"rgba(240,192,64,.8)",textShadowRadius:6,textShadowOffset:{width:0,height:0}},
+  whiteCrown:{color:"#a87818"},blackCrown:{color:"#f0c850"},
+  winRing:{position:"absolute",top:-5,left:-5,right:-5,bottom:-5,borderRadius:100,borderWidth:3,borderColor:"#ffd86b",shadowColor:"#ffd86b",shadowOpacity:1,shadowRadius:10},
+  bannerWrap:{...StyleSheet.absoluteFillObject,alignItems:"center",justifyContent:"center"},
+  banner:{backgroundColor:"rgba(16,29,25,.93)",borderRadius:20,borderWidth:2,borderColor:"#7d8f7f",paddingVertical:18,paddingHorizontal:26,alignItems:"center",maxWidth:"88%"},
+  bannerWin:{borderColor:"#ffd86b",shadowColor:"#ffd86b",shadowOpacity:.9,shadowRadius:18,elevation:12},
+  bannerEmoji:{fontSize:42},
+  bannerTitle:{color:"#ffe9a8",fontSize:21,fontWeight:"900",letterSpacing:1,marginTop:4,textAlign:"center"},
+  bannerSub:{color:"#d3d9ce",fontSize:12,marginTop:4,textAlign:"center"},
+  bannerBtn:{marginTop:14,backgroundColor:"#c49b4a",paddingVertical:10,paddingHorizontal:18,borderRadius:12},
+  bannerBtnText:{color:"#17231d",fontWeight:"900",fontSize:13},
   moveDot:{width:10,height:10,borderRadius:10,backgroundColor:"#e8f2cf",borderWidth:1,borderColor:"#536c40"},
   statusBox:{marginTop:14,backgroundColor:"#24372d",borderColor:"#49634d",borderWidth:1,borderRadius:13,padding:13,flexDirection:"row",alignItems:"center",gap:9},
   statusIcon:{color:"#e0bd69",fontSize:18},statusText:{color:"#f3ead7",fontWeight:"700",fontSize:12,flex:1},
