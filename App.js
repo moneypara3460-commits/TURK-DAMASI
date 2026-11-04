@@ -148,6 +148,7 @@ export default function App(){
   const [legal,setLegal]=useState([]);
   const [turn,setTurn]=useState("white");
   const [difficulty,setDifficulty]=useState("Usta");
+  const [mode,setMode]=useState("ai");
   const [movesCount,setMovesCount]=useState(0);
   const [status,setStatus]=useState("Sıra sende. İlk hamleni yap!");
   const [busy,setBusy]=useState(false);
@@ -162,16 +163,22 @@ export default function App(){
   const whiteCount=useMemo(()=>countPieces(board,"white"),[board]);
   const blackCount=useMemo(()=>countPieces(board,"black"),[board]);
   const cell=boardWidth/8;
-
-  function reset(){
+  const pvp=mode==="pvp";
+  
+  function reset(m=mode){
     animationLock.current=false;quietRef.current=0;turnProgress.current=false;
     setAnimating(null);progress.stopAnimation();progress.setValue(0);
     setBoard(initialBoard());setSelected(null);setLegal([]);setTurn("white");setMovesCount(0);
-    setBusy(false);setChainActive(false);setGameOver(false);setStatus("Sıra sende. İlk hamleni yap!");
+    setBusy(false);setChainActive(false);setGameOver(false);
+    setStatus(m==="pvp"?"2 kişilik oyun. Beyaz başlar, sıra Beyazda!":"Sıra sende. İlk hamleni yap!");
+  }
+  function switchMode(m){
+    if(m===mode||busy||animationLock.current) return;
+    setMode(m);reset(m);
   }
   function finishCheck(b){
-    if(!countPieces(b,"white")||!legalMoves(b,"white").length){setStatus("Oyun bitti. Yapay zekâ kazandı!");setGameOver(true);return true;}
-    if(!countPieces(b,"black")||!legalMoves(b,"black").length){setStatus("Tebrikler! Oyunu kazandın!");setGameOver(true);return true;}
+    if(!countPieces(b,"white")||!legalMoves(b,"white").length){setStatus(pvp?"Oyun bitti. Siyah kazandı! 🎉":"Oyun bitti. Yapay zekâ kazandı!");setGameOver(true);return true;}
+    if(!countPieces(b,"black")||!legalMoves(b,"black").length){setStatus(pvp?"Oyun bitti. Beyaz kazandı! 🎉":"Tebrikler! Oyunu kazandın!");setGameOver(true);return true;}
     const wp=b.flat().filter(p=>p&&p.side==="white"),bp=b.flat().filter(p=>p&&p.side==="black");
     if(wp.length===1&&bp.length===1&&wp[0].king&&bp[0].king&&!rawMoves(b,"white",null,true).length&&!rawMoves(b,"black",null,true).length){
       setStatus("Berabere! Bir vezir bir vezire karşı kaldı, kimse kazanamaz.");setGameOver(true);return true;
@@ -223,12 +230,12 @@ export default function App(){
   }
 
   async function tapSquare(r,c){
-    if(turn!=="white"||busy||gameOver||animationLock.current)return;
+    if((!pvp&&turn!=="white")||busy||gameOver||animationLock.current)return;
     const piece=board[r][c],target=legal.find(m=>m.to.r===r&&m.to.c===c);
     if(selected&&target){
       if(stepIsProgress(board,target)) turnProgress.current=true;
-      const next=await animateStep(board,target,"white");
-      const more=target.captured.length?bestFollow(next,"white",target.to):[];
+      const next=await animateStep(board,target,turn);
+      const more=target.captured.length?bestFollow(next,turn,target.to):[];
       if(more.length){
         setSelected(target.to);setLegal(more);setChainActive(true);
         setStatus("Güzel! Aynı taşla almaya devam et. Başka taş seçemezsin.");
@@ -236,11 +243,14 @@ export default function App(){
       }
       setSelected(null);setLegal([]);setChainActive(false);setMovesCount(n=>n+1);
       quietRef.current=turnProgress.current?0:quietRef.current+1;turnProgress.current=false;
-      if(!finishCheck(next)){setTurn("black");runAI(next);}
+      if(!finishCheck(next)){
+        if(pvp){const nt=turn==="white"?"black":"white";setTurn(nt);setStatus("Sıra "+(nt==="white"?"Beyazda":"Siyahta")+". Telefonu rakibine ver!");}
+        else{setTurn("black");runAI(next);}
+      }
       return;
     }
-    if(piece&&piece.side==="white"&&!chainActive){
-      const moves=legalMoves(board,"white",{r,c}).filter(m=>m.from.r===r&&m.from.c===c);
+    if(piece&&piece.side===turn&&!chainActive){
+      const moves=legalMoves(board,turn,{r,c}).filter(m=>m.from.r===r&&m.from.c===c);
       setSelected({r,c});setLegal(moves);
       setStatus(moves.some(m=>m.captured.length)?"Taş alma zorunlu. Parlayan karelerden birini seç.":"Taşını hareket ettireceğin kareyi seç.");
     }else if(!chainActive){setSelected(null);setLegal([]);}
@@ -259,17 +269,23 @@ export default function App(){
     <ScrollView contentContainerStyle={styles.container}>
       <View style={styles.header}>
         <View><Text style={styles.eyebrow}>STRATEJİ • ZEKA • SABIR</Text><Text style={styles.title}>TÜRK DAMASI</Text></View>
-        <Pressable onPress={reset} style={styles.newButton}><Text style={styles.newButtonText}>↻ Yeni Oyun</Text></Pressable>
+        <Pressable onPress={()=>reset()} style={styles.newButton}><Text style={styles.newButtonText}>↻ Yeni Oyun</Text></Pressable>
       </View>
       <View style={styles.hero}>
+        <View style={styles.modeRow}>
+          <Pressable onPress={()=>switchMode("ai")} style={[styles.modeBtn,!pvp&&styles.levelActive]}><Text style={[styles.levelText,!pvp&&styles.levelTextActive]}>🤖 Yapay Zekâ</Text></Pressable>
+          <Pressable onPress={()=>switchMode("pvp")} style={[styles.modeBtn,pvp&&styles.levelActive]}><Text style={[styles.levelText,pvp&&styles.levelTextActive]}>👥 2 Kişi</Text></Pressable>
+        </View>
+        {pvp?<View><Text style={styles.heroLabel}>MOD</Text><Text style={styles.heroName}>👥 İki Kişilik Oyun</Text><Text style={styles.levelHint}>Aynı telefonda sırayla oynayın. Beyaz alttan başlar.</Text></View>:<>
         <View><Text style={styles.heroLabel}>RAKİBİN</Text><Text style={styles.heroName}>🤖 Yapay Zekâ</Text></View>
         <View style={styles.levelWrap}>{levels.map(l=><Pressable key={l} onPress={()=>{if(!busy&&turn==="white"&&!chainActive){setDifficulty(l);setStatus("Zorluk "+l+" seçildi.");}}} style={[styles.level,difficulty===l&&styles.levelActive]}><Text style={[styles.levelText,difficulty===l&&styles.levelTextActive]}>{l}</Text></Pressable>)}</View>
         <Text style={styles.levelHint}>Seviye: {difficulty} • {levelConfig[difficulty].depth} hamle derinliğinde analiz</Text>
+        </>}
       </View>
       <View style={styles.scoreRow}>
-        <View style={styles.scoreCard}><Text style={styles.scoreLabel}>SEN • BEYAZ</Text><Text style={styles.scoreNumber}>{whiteCount}</Text><Text style={styles.scoreSub}>taş kaldı</Text></View>
-        <View style={styles.turnPill}><Text style={styles.turnText}>{busy?"RAKİP DÜŞÜNÜYOR":turn==="white"?"SIRA SENDE":"RAKİPTE"}</Text><Text style={styles.turnDot}>●</Text></View>
-        <View style={styles.scoreCard}><Text style={styles.scoreLabel}>YAPAY ZEKÂ • SİYAH</Text><Text style={styles.scoreNumber}>{blackCount}</Text><Text style={styles.scoreSub}>taş kaldı</Text></View>
+        <View style={styles.scoreCard}><Text style={styles.scoreLabel}>{pvp?"OYUNCU 1 • BEYAZ":"SEN • BEYAZ"}</Text><Text style={styles.scoreNumber}>{whiteCount}</Text><Text style={styles.scoreSub}>taş kaldı</Text></View>
+        <View style={styles.turnPill}><Text style={styles.turnText}>{pvp?(turn==="white"?"SIRA BEYAZDA":"SIRA SİYAHTA"):busy?"RAKİP DÜŞÜNÜYOR":turn==="white"?"SIRA SENDE":"RAKİPTE"}</Text><Text style={styles.turnDot}>●</Text></View>
+        <View style={styles.scoreCard}><Text style={styles.scoreLabel}>{pvp?"OYUNCU 2 • SİYAH":"YAPAY ZEKÂ • SİYAH"}</Text><Text style={styles.scoreNumber}>{blackCount}</Text><Text style={styles.scoreSub}>taş kaldı</Text></View>
       </View>
       <View style={styles.boardOuter}>
         <View style={styles.board} onLayout={e=>setBoardWidth(e.nativeEvent.layout.width)}>
@@ -301,7 +317,7 @@ export default function App(){
       </View>
       <View style={styles.rules}>
         <Text style={styles.rulesTitle}>NASIL OYNANIR?</Text>
-        <Text style={styles.ruleText}>• Beyaz taşlarla sen oynarsın. Taşlar ileri ve yana bir kare gider.</Text>
+        <Text style={styles.ruleText}>• Yapay zekâya karşı beyaz taşlarla sen oynarsın; 2 kişi modunda telefonu sırayla verirsiniz, Beyaz başlar. Taşlar ileri ve yana bir kare gider.</Text>
         <Text style={styles.ruleText}>• Rakip taşın üzerinden ileri veya yana atlayarak taş alırsın (geri alma sadece vezirde). Taş alma zorunludur.</Text>
         <Text style={styles.ruleText}>• Birden fazla alma yolu varsa en çok taş alan yolu seçmek zorundasın.</Text>
         <Text style={styles.ruleText}>• Bir taş aldıktan sonra aynı taşla başka alma imkânı varsa devam etmelisin.</Text>
@@ -324,6 +340,8 @@ const styles=StyleSheet.create({
   hero:{backgroundColor:"#1a2c25",borderColor:"#344a3d",borderWidth:1,borderRadius:16,padding:14,marginBottom:14},
   heroLabel:{color:"#a9b5a8",fontSize:9,letterSpacing:2,fontWeight:"800"},
   heroName:{color:"#f6edda",fontSize:17,fontWeight:"800",marginTop:4},
+  modeRow:{flexDirection:"row",gap:8,marginBottom:12},
+  modeBtn:{flex:1,alignItems:"center",paddingVertical:9,borderRadius:10,backgroundColor:"#263b31",borderWidth:1,borderColor:"#3c5143"},
   levelWrap:{flexDirection:"row",flexWrap:"wrap",gap:6,marginTop:12},
   level:{paddingVertical:7,paddingHorizontal:10,borderRadius:9,backgroundColor:"#263b31",borderWidth:1,borderColor:"#3c5143"},
   levelActive:{backgroundColor:"#c49b4a",borderColor:"#e4c77f"},
