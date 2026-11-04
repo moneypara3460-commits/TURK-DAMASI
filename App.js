@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useRef, useEffect } from "react";
 import {
   View, Text, Pressable, StyleSheet, SafeAreaView, ScrollView,
-  StatusBar, Animated, Easing, useWindowDimensions
+  StatusBar, Animated, Easing, useWindowDimensions, Platform
 } from "react-native";
 
 const initialBoard=()=>{
@@ -142,6 +142,75 @@ function aiChoose(board,difficulty){
   return ranked[0].turn;
 }
 
+// ---------- SES EFEKTLERİ (dosya yok, kod ile üretiliyor) ----------
+const SR=22050;
+const B64="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function bytesToBase64(bytes){
+  let out="";
+  for(let i=0;i<bytes.length;i+=3){
+    const a=bytes[i],hasB=i+1<bytes.length,hasC=i+2<bytes.length,b=hasB?bytes[i+1]:0,c=hasC?bytes[i+2]:0;
+    out+=B64[a>>2]+B64[((a&3)<<4)|(b>>4)]+(hasB?B64[((b&15)<<2)|(c>>6)]:"=")+(hasC?B64[c&63]:"=");
+  }
+  return out;
+}
+function synthWav(parts,total){
+  const n=Math.floor(total*SR),buf=new Float32Array(n);
+  for(const p of parts){
+    const s0=Math.floor(p.t0*SR),len=Math.floor(p.dur*SR);
+    let ph=0,lp=0;
+    for(let i=0;i<len&&s0+i<n;i++){
+      const t=i/len;
+      let v;
+      if(p.noise){lp+=(Math.random()*2-1-lp)*p.cut;v=lp*1.8;}
+      else{
+        ph+=2*Math.PI*(p.f0+(p.f1-p.f0)*t)/SR;
+        v=p.type==="tri"?(2/Math.PI)*Math.asin(Math.sin(ph)):Math.sin(ph);
+      }
+      buf[s0+i]+=v*Math.min(1,i/(SR*.004))*Math.pow(1-t,p.curve||2)*p.vol;
+    }
+  }
+  const bytes=new Uint8Array(44+n*2),dv=new DataView(bytes.buffer);
+  const wr=(o,t)=>{for(let i=0;i<t.length;i++)bytes[o+i]=t.charCodeAt(i);};
+  wr(0,"RIFF");dv.setUint32(4,36+n*2,true);wr(8,"WAVE");wr(12,"fmt ");
+  dv.setUint32(16,16,true);dv.setUint16(20,1,true);dv.setUint16(22,1,true);
+  dv.setUint32(24,SR,true);dv.setUint32(28,SR*2,true);dv.setUint16(32,2,true);dv.setUint16(34,16,true);
+  wr(36,"data");dv.setUint32(40,n*2,true);
+  for(let i=0;i<n;i++) dv.setInt16(44+i*2,Math.max(-1,Math.min(1,buf[i]))*32767,true);
+  return "data:audio/wav;base64,"+bytesToBase64(bytes);
+}
+const tone=(t0,f,dur,vol=.28,curve=2)=>({t0,f0:f,f1:f,dur,vol,type:"tri",curve});
+const SOUND_DEFS={
+  select:{total:.1,parts:[{t0:0,f0:900,f1:700,dur:.06,vol:.22,curve:3}]},
+  move:{total:.2,parts:[{noise:1,cut:.22,t0:0,dur:.07,vol:.55,curve:4},{t0:0,f0:260,f1:130,dur:.14,vol:.45,curve:3}]},
+  capture:{total:.35,parts:[
+    {noise:1,cut:.5,t0:0,dur:.09,vol:.55,curve:3},{t0:0,f0:210,f1:90,dur:.2,vol:.5,curve:3},
+    {noise:1,cut:.3,t0:.08,dur:.07,vol:.5,curve:3},{t0:.08,f0:430,f1:300,dur:.12,vol:.3,curve:3}]},
+  king:{total:.6,parts:[523,659,784,1047].map((f,i)=>tone(i*.08,f,.28))},
+  win:{total:1.4,parts:[tone(0,523,.35,.28,1.5),tone(.15,659,.35,.28,1.5),tone(.3,784,.35,.28,1.5),
+    tone(.45,1047,.9,.3,1.5),tone(.45,784,.9,.2,1.5),tone(.45,523,.9,.2,1.5),tone(.8,1568,.4,.15,2)]},
+  lose:{total:1.1,parts:[tone(0,392,.3,.3),tone(.25,330,.3,.3),tone(.5,262,.6,.3)]},
+  draw:{total:.9,parts:[tone(0,392,.35),tone(.3,392,.5)]}
+};
+const soundUris={},nativePlayers={};
+let audioModeSet=false;
+function playSfx(name){
+  try{
+    if(!soundUris[name]) soundUris[name]=synthWav(SOUND_DEFS[name].parts,SOUND_DEFS[name].total);
+    const uri=soundUris[name];
+    if(Platform.OS==="web"){
+      if(typeof Audio==="undefined") return;
+      const a=new Audio(uri);a.volume=.9;
+      const pr=a.play();if(pr&&pr.catch) pr.catch(()=>{});
+      return;
+    }
+    const audio=require("expo-audio");
+    if(!audioModeSet){audioModeSet=true;try{audio.setAudioModeAsync({playsInSilentMode:true});}catch(e){}}
+    let pl=nativePlayers[name];
+    if(!pl){pl=audio.createAudioPlayer({uri});nativePlayers[name]=pl;}
+    pl.seekTo(0);pl.play();
+  }catch(e){}
+}
+
 const LIGHT_SHADES=["#dfc08e","#e3c695","#d9ba88","#e6cb9a"];
 const DARK_SHADES=["#74492a","#7c5130","#6e4426","#82552f"];
 const CONFETTI=["#ffd86b","#ff6b6b","#6bd6ff","#9bff8f","#ff9bf0","#ffffff"];
@@ -199,6 +268,10 @@ export default function App(){
   const [gameOver,setGameOver]=useState(false);
   const [result,setResult]=useState(null);
   const [lastMove,setLastMove]=useState(null);
+  const [soundOn,setSoundOn]=useState(true);
+  const soundRef=useRef(true);
+  const sfx=n=>{if(soundRef.current) playSfx(n);};
+  function toggleSound(){const next=!soundOn;soundRef.current=next;setSoundOn(next);if(next) playSfx("select");}
   const [animating,setAnimating]=useState(null);
   const [boardWidth,setBoardWidth]=useState(0);
   const progress=useRef(new Animated.Value(0)).current;
@@ -218,6 +291,9 @@ export default function App(){
     ]));
     loop.start();
     return()=>loop.stop();
+  },[result]);
+  useEffect(()=>{
+    if(result) sfx(result.winner===null?"draw":result.party?"win":"lose");
   },[result]);
   function winResult(winner){
     if(pvp) return {winner,party:true,emoji:"🏆",title:winner==="white"?"BEYAZ KAZANDI!":"SİYAH KAZANDI!",sub:"Tebrikler, harika bir oyundu!"};
@@ -261,6 +337,9 @@ export default function App(){
       }).start(()=>{
         const next=applyStep(currentBoard,move,side);
         setBoard(next);setAnimating(null);animationLock.current=false;
+        sfx(move.captured.length?"capture":"move");
+        const landed=next[move.to.r][move.to.c];
+        if(landed&&landed.king&&!piece.king) setTimeout(()=>sfx("king"),180);
         resolve(next);
       });
     });
@@ -314,7 +393,7 @@ export default function App(){
     }
     if(piece&&piece.side===turn&&!chainActive){
       const moves=legalMoves(board,turn,{r,c}).filter(m=>m.from.r===r&&m.from.c===c);
-      setSelected({r,c});setLegal(moves);
+      sfx("select");setSelected({r,c});setLegal(moves);
       setStatus(moves.some(m=>m.captured.length)?"Taş alma zorunlu. Parlayan karelerden birini seç.":"Taşını hareket ettireceğin kareyi seç.");
     }else if(!chainActive){setSelected(null);setLegal([]);}
   }
@@ -332,7 +411,10 @@ export default function App(){
     <ScrollView contentContainerStyle={styles.container}>
       <View style={styles.header}>
         <View><Text style={styles.eyebrow}>STRATEJİ • ZEKA • SABIR</Text><Text style={styles.title}>TÜRK DAMASI</Text></View>
-        <Pressable onPress={()=>reset()} style={styles.newButton}><Text style={styles.newButtonText}>↻ Yeni Oyun</Text></Pressable>
+        <View style={styles.headerBtns}>
+          <Pressable onPress={toggleSound} style={styles.soundButton}><Text style={styles.soundText}>{soundOn?"🔊":"🔇"}</Text></Pressable>
+          <Pressable onPress={()=>reset()} style={styles.newButton}><Text style={styles.newButtonText}>↻ Yeni Oyun</Text></Pressable>
+        </View>
       </View>
       <View style={styles.hero}>
         <View style={styles.modeRow}>
@@ -399,6 +481,9 @@ const styles=StyleSheet.create({
   header:{flexDirection:"row",justifyContent:"space-between",alignItems:"center",marginBottom:18},
   eyebrow:{fontSize:9,letterSpacing:3,color:"#c8a65b",fontWeight:"800"},
   title:{fontSize:25,fontWeight:"900",letterSpacing:1.5,color:"#f4ead5",marginTop:4},
+  headerBtns:{flexDirection:"row",alignItems:"center",gap:8},
+  soundButton:{backgroundColor:"#263b31",borderWidth:1,borderColor:"#3c5143",paddingVertical:8,paddingHorizontal:11,borderRadius:12},
+  soundText:{fontSize:16},
   newButton:{backgroundColor:"#c49b4a",paddingVertical:10,paddingHorizontal:13,borderRadius:12},
   newButtonText:{color:"#17231d",fontWeight:"900",fontSize:12},
   hero:{backgroundColor:"#1a2c25",borderColor:"#344a3d",borderWidth:1,borderRadius:16,padding:14,marginBottom:14},

@@ -6,6 +6,7 @@
   "dependencies": {
     "expo": "~54.0.0",
     "react": "19.1.0",
-    "react-native": "0.81.4"
+    "react-native": "0.81.4",
+    "expo-audio": "~1.1.1"
   }
 }
