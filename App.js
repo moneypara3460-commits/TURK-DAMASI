@@ -172,6 +172,10 @@ export default function App(){
   function finishCheck(b){
     if(!countPieces(b,"white")||!legalMoves(b,"white").length){setStatus("Oyun bitti. Yapay zekâ kazandı!");setGameOver(true);return true;}
     if(!countPieces(b,"black")||!legalMoves(b,"black").length){setStatus("Tebrikler! Oyunu kazandın!");setGameOver(true);return true;}
+    const wp=b.flat().filter(p=>p&&p.side==="white"),bp=b.flat().filter(p=>p&&p.side==="black");
+    if(wp.length===1&&bp.length===1&&wp[0].king&&bp[0].king&&!rawMoves(b,"white",null,true).length&&!rawMoves(b,"black",null,true).length){
+      setStatus("Berabere! Bir vezir bir vezire karşı kaldı, kimse kazanamaz.");setGameOver(true);return true;
+    }
     if(quietRef.current>=DRAW_LIMIT){setStatus("Berabere! Uzun süredir taş alınmadı ve ilerleme olmadı.");setGameOver(true);return true;}
     return false;
   }
