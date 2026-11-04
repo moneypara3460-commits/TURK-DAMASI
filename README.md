@@ -1,18 +1,11 @@
-# TÜRK DAMASI
+TÜRK DAMASI - Animasyonlu hamle sürümü
 
-Bağımsız Türk Daması mobil oyun prototipi. FREKANS projesinden ayrıdır.
+Bu sürümde hem oyuncunun hem yapay zekânın taşları kareler arasında kayarak hareket eder.
+Çoklu taş alma sırasında her atlayış ayrı ayrı animasyonla gösterilir.
 
-## İçerik
-- `App.js`: Oyun ekranı, tahta, taş hareketleri, çoklu taş alma ve yapay zekâ.
-- `package.json`: Expo / React Native bağımlılıkları.
-- `KURULUM.txt`: Expo Snack ve GitHub yükleme notları.
+Dosyalar:
+- App.js: Güncel oyun ve animasyon kodu
+- package.json: Expo bağımlılıkları
+- README.md: Proje açıklaması
 
-## Mevcut prototip özellikleri
-- 8x8 Türk daması tahtası
-- Beyaz oyuncu ve siyah yapay zekâ
-- Zorunlu taş alma ve aynı taşla ardışık taş alma
-- Beş AI seviyesi: Çaylak, Acemi, Usta, Şampiyon, Efsane
-- Seviye bazlı arama derinliği ve hata payı
-- Yeni oyun, taş sayacı ve hamle sayacı
-
-Not: Seviye kazanma oranları garanti edilmiş yüzdeler değildir. Gerçek oranları belirlemek için çok sayıda otomatik oyun testi ve dengeleme gerekir.
+Expo Snack'e aktarırken App.js ve package.json yeterlidir.
