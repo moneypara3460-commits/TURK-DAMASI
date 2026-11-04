@@ -144,7 +144,6 @@ function aiChoose(board,difficulty){
 
 const LIGHT_SHADES=["#dfc08e","#e3c695","#d9ba88","#e6cb9a"];
 const DARK_SHADES=["#74492a","#7c5130","#6e4426","#82552f"];
-const FILES=["a","b","c","d","e","f","g","h"];
 const CONFETTI=["#ffd86b","#ff6b6b","#6bd6ff","#9bff8f","#ff9bf0","#ffffff"];
 function Piece({side,king,selected,glow,full}){
   const white=side==="white";
@@ -353,7 +352,6 @@ export default function App(){
       </View>
       <View style={styles.boardOuter}>
         <View style={styles.boardRow}>
-        <View style={styles.rankCol}>{[8,7,6,5,4,3,2,1].map(n=><View key={n} style={styles.rankCell}><Text style={styles.coord}>{n}</Text></View>)}</View>
         <View style={styles.board} onLayout={e=>setBoardWidth(e.nativeEvent.layout.width)}>
           {board.map((row,r)=><View key={r} style={styles.row}>{row.map((piece,c)=>{
             const isLight=(r+c)%2===0,isSelected=selected?.r===r&&selected?.c===c;
@@ -374,7 +372,6 @@ export default function App(){
           {result&&<ResultBanner key={"b"+movesCount} result={result} onAgain={()=>reset()}/>}
         </View>
         </View>
-        <View style={styles.fileRow}>{FILES.map(f=><View key={f} style={styles.fileCell}><Text style={styles.coord}>{f}</Text></View>)}</View>
       </View>
       <View style={styles.statusBox}><Text style={styles.statusIcon}>✦</Text><Text style={styles.statusText}>{status}</Text></View>
       <View style={styles.infoRow}>
@@ -422,9 +419,6 @@ const styles=StyleSheet.create({
   turnText:{fontSize:8,color:"#e4c77f",fontWeight:"900",letterSpacing:1},turnDot:{color:"#d4ad5d",fontSize:12},
   boardOuter:{backgroundColor:"#3a2818",padding:10,paddingTop:12,borderRadius:20,borderWidth:3,borderColor:"#b98a42",shadowColor:"#000",shadowOpacity:.45,shadowRadius:16,shadowOffset:{width:0,height:6},elevation:10},
   boardRow:{flexDirection:"row"},
-  rankCol:{width:16},rankCell:{flex:1,alignItems:"center",justifyContent:"center"},
-  fileRow:{flexDirection:"row",paddingLeft:16,marginTop:4},fileCell:{flex:1,alignItems:"center"},
-  coord:{color:"#c8a65b",fontSize:10,fontWeight:"800",opacity:.85},
   lastOverlay:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(255,214,102,.30)"},
   board:{flex:1,borderWidth:2,borderColor:"#c49b4a",position:"relative",overflow:"hidden",borderRadius:4},
   row:{flexDirection:"row"},square:{width:"12.5%",aspectRatio:1,alignItems:"center",justifyContent:"center",borderWidth:.6,borderTopColor:"rgba(255,255,255,.14)",borderLeftColor:"rgba(255,255,255,.10)",borderBottomColor:"rgba(0,0,0,.18)",borderRightColor:"rgba(0,0,0,.14)"},
