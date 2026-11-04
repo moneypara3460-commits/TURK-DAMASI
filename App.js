@@ -142,6 +142,9 @@ function aiChoose(board,difficulty){
   return ranked[0].turn;
 }
 
+const LIGHT_SHADES=["#dfc08e","#e3c695","#d9ba88","#e6cb9a"];
+const DARK_SHADES=["#74492a","#7c5130","#6e4426","#82552f"];
+const FILES=["a","b","c","d","e","f","g","h"];
 const CONFETTI=["#ffd86b","#ff6b6b","#6bd6ff","#9bff8f","#ff9bf0","#ffffff"];
 function Piece({side,king,selected,glow,full}){
   const white=side==="white";
@@ -196,6 +199,7 @@ export default function App(){
   const [chainActive,setChainActive]=useState(false);
   const [gameOver,setGameOver]=useState(false);
   const [result,setResult]=useState(null);
+  const [lastMove,setLastMove]=useState(null);
   const [animating,setAnimating]=useState(null);
   const [boardWidth,setBoardWidth]=useState(0);
   const progress=useRef(new Animated.Value(0)).current;
@@ -205,7 +209,7 @@ export default function App(){
   const pulse=useRef(new Animated.Value(0)).current;
   const whiteCount=useMemo(()=>countPieces(board,"white"),[board]);
   const blackCount=useMemo(()=>countPieces(board,"black"),[board]);
-  const cell=boardWidth/8;
+  const cell=Math.max(0,(boardWidth-4)/8);
   const pvp=mode==="pvp";
   useEffect(()=>{
     if(!result||!result.party){pulse.setValue(0);return;}
@@ -228,7 +232,7 @@ export default function App(){
     animationLock.current=false;quietRef.current=0;turnProgress.current=false;
     setAnimating(null);progress.stopAnimation();progress.setValue(0);
     setBoard(initialBoard());setSelected(null);setLegal([]);setTurn("white");setMovesCount(0);
-    setBusy(false);setChainActive(false);setGameOver(false);setResult(null);
+    setBusy(false);setChainActive(false);setGameOver(false);setResult(null);setLastMove(null);
     setStatus(m==="pvp"?"2 kişilik oyun. Beyaz başlar, sıra Beyazda!":"Sıra sende. İlk hamleni yap!");
   }
   function switchMode(m){
@@ -251,6 +255,7 @@ export default function App(){
       const piece=currentBoard[move.from.r][move.from.c];
       if(!piece||!cell){resolve(applyStep(currentBoard,move,side));return;}
       animationLock.current=true;progress.stopAnimation();progress.setValue(0);
+      setLastMove({from:move.from,to:move.to});
       setAnimating({from:move.from,to:move.to,piece});
       Animated.timing(progress,{
         toValue:1,duration:560,easing:Easing.inOut(Easing.cubic),useNativeDriver:true
@@ -347,14 +352,19 @@ export default function App(){
         <View style={styles.scoreCard}><Text style={styles.scoreLabel}>{pvp?"OYUNCU 2 • SİYAH":"YAPAY ZEKÂ • SİYAH"}</Text><Text style={styles.scoreNumber}>{blackCount}</Text><Text style={styles.scoreSub}>taş kaldı</Text></View>
       </View>
       <View style={styles.boardOuter}>
+        <View style={styles.boardRow}>
+        <View style={styles.rankCol}>{[8,7,6,5,4,3,2,1].map(n=><View key={n} style={styles.rankCell}><Text style={styles.coord}>{n}</Text></View>)}</View>
         <View style={styles.board} onLayout={e=>setBoardWidth(e.nativeEvent.layout.width)}>
           {board.map((row,r)=><View key={r} style={styles.row}>{row.map((piece,c)=>{
             const isLight=(r+c)%2===0,isSelected=selected?.r===r&&selected?.c===c;
-            const isLegal=legal.some(m=>m.to.r===r&&m.to.c===c);
+            const legalMove=legal.find(m=>m.to.r===r&&m.to.c===c),isLegal=!!legalMove;
+            const isLast=lastMove&&((lastMove.from.r===r&&lastMove.from.c===c)||(lastMove.to.r===r&&lastMove.to.c===c));
+            const shade=(isLight?LIGHT_SHADES:DARK_SHADES)[(r*3+c*5)%4];
             const isMovingSource=animating?.from.r===r&&animating?.from.c===c;
-            return <Pressable key={c} onPress={()=>tapSquare(r,c)} style={[styles.square,isLight?styles.lightSquare:styles.darkSquare,isSelected&&styles.selectedSquare,isLegal&&styles.legalSquare]}>
+            return <Pressable key={c} onPress={()=>tapSquare(r,c)} style={[styles.square,{backgroundColor:shade},isSelected&&styles.selectedSquare,isLegal&&styles.legalSquare]}>
+              {isLast&&<View pointerEvents="none" style={styles.lastOverlay}/>}
               {piece&&!isMovingSource&&<Piece side={piece.side} king={piece.king} selected={isSelected} glow={result&&result.party&&result.winner===piece.side?pulse:null}/>}
-              {isLegal&&!piece&&<View style={styles.moveDot}/>}
+              {isLegal&&!piece&&<View style={[styles.moveDot,legalMove.captured.length>0&&styles.captureDot]}/>}
             </Pressable>;
           })}</View>)}
           {animating&&cell>0&&<Animated.View pointerEvents="none" style={[movingStyle,{transform:[{translateX},{translateY}]}]}>
@@ -363,6 +373,8 @@ export default function App(){
           {result&&result.party&&boardWidth>0&&<Confetti key={"c"+movesCount} w={boardWidth} h={boardWidth}/>}
           {result&&<ResultBanner key={"b"+movesCount} result={result} onAgain={()=>reset()}/>}
         </View>
+        </View>
+        <View style={styles.fileRow}>{FILES.map(f=><View key={f} style={styles.fileCell}><Text style={styles.coord}>{f}</Text></View>)}</View>
       </View>
       <View style={styles.statusBox}><Text style={styles.statusIcon}>✦</Text><Text style={styles.statusText}>{status}</Text></View>
       <View style={styles.infoRow}>
@@ -408,11 +420,15 @@ const styles=StyleSheet.create({
   scoreNumber:{fontSize:25,color:"#f5ecd9",fontWeight:"900",marginTop:2},
   scoreSub:{fontSize:9,color:"#a9b5a8"},turnPill:{alignItems:"center",gap:4},
   turnText:{fontSize:8,color:"#e4c77f",fontWeight:"900",letterSpacing:1},turnDot:{color:"#d4ad5d",fontSize:12},
-  boardOuter:{backgroundColor:"#39281b",padding:9,borderRadius:18,borderWidth:3,borderColor:"#9a713b",shadowColor:"#000",shadowOpacity:.35,shadowRadius:12,elevation:8},
-  board:{borderWidth:2,borderColor:"#21180f",position:"relative",overflow:"hidden"},
-  row:{flexDirection:"row"},square:{width:"12.5%",aspectRatio:1,alignItems:"center",justifyContent:"center"},
-  lightSquare:{backgroundColor:"#d9bd8c"},darkSquare:{backgroundColor:"#79502f"},
-  selectedSquare:{backgroundColor:"#d5b04f"},legalSquare:{backgroundColor:"#9db17a"},
+  boardOuter:{backgroundColor:"#3a2818",padding:10,paddingTop:12,borderRadius:20,borderWidth:3,borderColor:"#b98a42",shadowColor:"#000",shadowOpacity:.45,shadowRadius:16,shadowOffset:{width:0,height:6},elevation:10},
+  boardRow:{flexDirection:"row"},
+  rankCol:{width:16},rankCell:{flex:1,alignItems:"center",justifyContent:"center"},
+  fileRow:{flexDirection:"row",paddingLeft:16,marginTop:4},fileCell:{flex:1,alignItems:"center"},
+  coord:{color:"#c8a65b",fontSize:10,fontWeight:"800",opacity:.85},
+  lastOverlay:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(255,214,102,.30)"},
+  board:{flex:1,borderWidth:2,borderColor:"#c49b4a",position:"relative",overflow:"hidden",borderRadius:4},
+  row:{flexDirection:"row"},square:{width:"12.5%",aspectRatio:1,alignItems:"center",justifyContent:"center",borderWidth:.6,borderTopColor:"rgba(255,255,255,.14)",borderLeftColor:"rgba(255,255,255,.10)",borderBottomColor:"rgba(0,0,0,.18)",borderRightColor:"rgba(0,0,0,.14)"},
+  selectedSquare:{backgroundColor:"#d9b04c"},legalSquare:{backgroundColor:"#8fa86f"},
   piece:{width:"76%",height:"76%",borderRadius:100,alignItems:"center",justifyContent:"center",borderWidth:2,shadowColor:"#000",shadowOpacity:.55,shadowRadius:4,shadowOffset:{width:0,height:3},elevation:6},
   pieceFull:{width:"100%",height:"100%"},
   animatedWrap:{width:"100%",height:"100%",alignItems:"center",justifyContent:"center"},
@@ -437,7 +453,8 @@ const styles=StyleSheet.create({
   bannerSub:{color:"#d3d9ce",fontSize:12,marginTop:4,textAlign:"center"},
   bannerBtn:{marginTop:14,backgroundColor:"#c49b4a",paddingVertical:10,paddingHorizontal:18,borderRadius:12},
   bannerBtnText:{color:"#17231d",fontWeight:"900",fontSize:13},
-  moveDot:{width:10,height:10,borderRadius:10,backgroundColor:"#e8f2cf",borderWidth:1,borderColor:"#536c40"},
+  moveDot:{width:12,height:12,borderRadius:12,backgroundColor:"#f3f7dc",borderWidth:2,borderColor:"#4f6a38",shadowColor:"#fff",shadowOpacity:.9,shadowRadius:5},
+  captureDot:{backgroundColor:"#ffb3a6",borderColor:"#a8321f",shadowColor:"#ff6b4a"},
   statusBox:{marginTop:14,backgroundColor:"#24372d",borderColor:"#49634d",borderWidth:1,borderRadius:13,padding:13,flexDirection:"row",alignItems:"center",gap:9},
   statusIcon:{color:"#e0bd69",fontSize:18},statusText:{color:"#f3ead7",fontWeight:"700",fontSize:12,flex:1},
   infoRow:{flexDirection:"row",gap:8,marginTop:12},
