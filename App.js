@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useRef, useEffect } from "react";
 import {
   View, Text, Pressable, StyleSheet, SafeAreaView, ScrollView,
-  StatusBar, Animated, Easing, useWindowDimensions, Platform
+  StatusBar, Animated, Easing, useWindowDimensions, Platform, TextInput
 } from "react-native";
 
 const initialBoard=()=>{
@@ -142,6 +142,177 @@ function aiChoose(board,difficulty){
   return ranked[0].turn;
 }
 
+// ===== CANLI YAYIN MOTORU BAŞLANGIÇ (saf mantık: ekran ve animasyon yok) =====
+// İzleyiciler TikTok yorumlarıyla oynar. Kazanan kalır ("kral tahtı"), sıradaki meydan okur.
+const MOVE_SECONDS=30,BANNER_MS=7000,MISS_LIMIT=2,MAX_QUEUE=40;
+const FILES="ABCDEFGH";
+const sqName=(r,c)=>FILES[c]+(8-r);
+const otherSide=s=>s==="white"?"black":"white";
+const sideTR=s=>s==="white"?"Beyaz":"Siyah";
+const norm=s=>String(s==null?"":s).replace(/İ/g,"i").replace(/I/g,"i").toLowerCase()
+  .replace(/ı/g,"i").replace(/ç/g,"c").replace(/ş/g,"s").replace(/ğ/g,"g").replace(/ö/g,"o").replace(/ü/g,"u").trim();
+
+// Yorumu komuta çevirir. Hamle biçimi: "C3 C4" (çoklu alma: "C3 E3 G3"). Başka her şey sohbettir ve yok sayılır.
+function parseComment(text){
+  const t=norm(text);
+  if(t.length>64) return null;
+  if(/^!\s*(katil|join)$/.test(t)) return {type:"join"};
+  if(/^!\s*(cik|ayril|leave)$/.test(t)) return {type:"leave"};
+  if(/^[a-h][1-8](?:[\s,>:.→–—-]*[a-h][1-8])+$/.test(t)){
+    const sq=t.match(/[a-h][1-8]/g).map(s=>({r:8-Number(s[1]),c:"abcdefgh".indexOf(s[0])}));
+    if(sq.length>=2&&sq.length<=17) return {type:"move",sq};   // en uzun zincir: 16 taş alma
+  }
+  return null;
+}
+// TikTool "chat" olayından {user,text} çıkarır. Belgelenen biçim: {event:"chat",data:{user:{uniqueId,nickname},comment}}
+function extractChat(m){
+  if(!m||typeof m!=="object"||m.event!=="chat") return null;
+  const d=m.data||{},u=d.user||{};
+  const id=norm(u.uniqueId||d.uniqueId||u.nickname||"");
+  const text=d.comment||d.text||"";
+  if(!id||!text) return null;
+  return {user:{id,name:u.nickname||u.uniqueId||id},text:String(text)};
+}
+// Kare listesini kurallara göre adım adım doğrular (zorunlu alma ve en çok taş alma dahil).
+function resolvePath(board,side,sq,chainFrom){
+  if(chainFrom&&(sq[0].r!==chainFrom.r||sq[0].c!==chainFrom.c)) return {ok:false};
+  let b=board;const steps=[];
+  for(let i=0;i<sq.length-1;i++){
+    const from=sq[i],to=sq[i+1];
+    let cands;
+    if(i===0&&!chainFrom) cands=legalMoves(b,side,from).filter(m=>m.from.r===from.r&&m.from.c===from.c);
+    else if(i===0||steps[i-1].captured.length) cands=bestFollow(b,side,from);
+    else return {ok:false};
+    const m=cands.find(x=>x.to.r===to.r&&x.to.c===to.c);
+    if(!m) return {ok:false};
+    steps.push(m);b=applyStep(b,m,side);
+  }
+  return {ok:true,steps,next:b};
+}
+function evalEnd(board,toMove,quiet){
+  if(!countPieces(board,toMove)||!legalMoves(board,toMove).length) return {winner:otherSide(toMove),reason:"hamle kalmadı"};
+  const wp=board.flat().filter(p=>p&&p.side==="white"),bp=board.flat().filter(p=>p&&p.side==="black");
+  if(wp.length===1&&bp.length===1&&wp[0].king&&bp[0].king&&!rawMoves(board,"white",null,true).length&&!rawMoves(board,"black",null,true).length)
+    return {winner:null,reason:"vezir vezire kaldı"};
+  if(quiet>=DRAW_LIMIT) return {winner:null,reason:"uzun süre ilerleme yok"};
+  return null;
+}
+// Süresi dolan oyuncu için rastgele ama kurallara uygun, tamamlanmış bir tur üretir.
+function randomTurn(board,side,chainFrom){
+  const pick=a=>a[Math.floor(Math.random()*a.length)];
+  if(!chainFrom){const turns=completeTurns(board,side);return turns.length?pick(turns).steps:null;}
+  let b=board,from=chainFrom;const steps=[];
+  for(;;){const c=bestFollow(b,side,from);if(!c.length)break;const m=pick(c);steps.push(m);b=applyStep(b,m,side);from=m.to;}
+  return steps;
+}
+function createLive(){
+  const S={phase:"lobby",king:null,streak:0,games:0,queue:[],players:{white:null,black:null},
+    board:initialBoard(),turn:"white",chain:null,quiet:0,turnProg:false,deadline:0,missed:{white:0,black:0},
+    nextAt:0,feed:[],last:{},result:null};
+  const feed=s=>{S.feed.unshift(s);if(S.feed.length>5)S.feed.pop();};
+  const canStart=()=>S.phase==="lobby"&&(S.king?S.queue.length>=1:S.queue.length>=2);
+  const pathText=steps=>[steps[0].from,...steps.map(m=>m.to)].map(s=>sqName(s.r,s.c)).join("→");
+  function startGame(now,acts){
+    if(!S.king){S.king=S.queue.shift();S.streak=0;S.games=0;}
+    const ch=S.queue.shift(),ks=S.games%2===0?"white":"black";
+    S.players={white:null,black:null};
+    S.players[ks]=S.king;S.players[otherSide(ks)]=ch;
+    S.board=initialBoard();S.turn="white";S.chain=null;S.quiet=0;S.turnProg=false;
+    S.missed={white:0,black:0};S.result=null;S.phase="playing";S.deadline=now+MOVE_SECONDS*1000;
+    feed("▶ "+S.players.white.name+" (Beyaz) – "+S.players.black.name+" (Siyah)");
+    acts.push({type:"newGame"});
+  }
+  function finish(end,now,acts){
+    S.phase="ended";S.nextAt=now+BANNER_MS;S.deadline=0;
+    const w=end.winner?S.players[end.winner]:null;
+    let title,sub;
+    if(w){
+      if(S.king&&w.id===S.king.id) S.streak++;else{S.king=w;S.streak=1;}
+      title=w.name+" KAZANDI!";
+      sub=(S.streak>1?S.streak+" galibiyet serisi! ":"")+"Kral: "+w.name;
+      feed("🏆 "+w.name+" kazandı ("+end.reason+")");
+    }else{
+      const ch=S.king&&S.players.white&&S.players.white.id===S.king.id?S.players.black:S.players.white;
+      if(ch) S.queue.push(ch);
+      title="BERABERE";sub=end.reason;
+      feed("🤝 Berabere ("+end.reason+")");
+    }
+    S.games++;
+    S.result={winner:end.winner,party:!!w,emoji:w?"🏆":"🤝",title,sub,noButton:true};
+    acts.push({type:"end",result:S.result});
+  }
+  function commit(steps,now,acts){
+    const side=S.turn,start=S.board;let b=start,prog=S.turnProg;
+    for(const m of steps){if(stepIsProgress(b,m)) prog=true;b=applyStep(b,m,side);}
+    S.board=b;S.turnProg=prog;
+    acts.push({type:"play",side,steps,startBoard:start,endBoard:b});
+    const last=steps[steps.length-1];
+    const more=last.captured.length?bestFollow(b,side,last.to):[];
+    S.deadline=now+MOVE_SECONDS*1000;
+    if(more.length){S.chain=last.to;return;}
+    S.chain=null;S.quiet=prog?0:S.quiet+1;S.turnProg=false;
+    const nx=otherSide(side),end=evalEnd(b,nx,S.quiet);
+    if(end){finish(end,now,acts);return;}
+    S.turn=nx;
+  }
+  function timeout(now,acts){
+    const side=S.turn,p=S.players[side];
+    S.missed[side]++;
+    if(S.missed[side]>=MISS_LIMIT){feed(p.name+" oynamadı, oyunu bıraktı");finish({winner:otherSide(side),reason:"süre doldu"},now,acts);return;}
+    feed(p.name+": süre doldu, rastgele hamle");
+    const steps=randomTurn(S.board,side,S.chain);
+    if(!steps||!steps.length){S.deadline=now+MOVE_SECONDS*1000;return;}
+    commit(steps,now,acts);
+  }
+  function handle(user,text,now){
+    const acts=[];
+    if(!user||!user.id) return acts;
+    if(now-(S.last[user.id]||0)<700) return acts;      // aynı kişiden art arda spam
+    S.last[user.id]=now;
+    if(Object.keys(S.last).length>3000) S.last={};
+    const cmd=parseComment(text);
+    if(!cmd) return acts;                                // sıradan sohbet: oyuna dokunmaz
+    const name=Array.from(String(user.name||user.id)).slice(0,14).join("");   // emoji ortadan kesilmesin
+    if(cmd.type==="join"){
+      const inGame=S.phase==="playing"&&((S.players.white&&S.players.white.id===user.id)||(S.players.black&&S.players.black.id===user.id));
+      if(inGame||(S.king&&S.king.id===user.id)||S.queue.some(q=>q.id===user.id)||S.queue.length>=MAX_QUEUE) return acts;
+      S.queue.push({id:user.id,name});feed(name+" sıraya girdi (#"+S.queue.length+")");
+      if(canStart()) startGame(now,acts);
+      return acts;
+    }
+    if(cmd.type==="leave"){
+      const idx=S.queue.findIndex(q=>q.id===user.id);
+      if(idx>=0){S.queue.splice(idx,1);feed(name+" sıradan çıktı");return acts;}
+      if(S.phase==="playing"){
+        const side=S.players.white&&S.players.white.id===user.id?"white":S.players.black&&S.players.black.id===user.id?"black":null;
+        if(side){feed(name+" oyundan ayrıldı");finish({winner:otherSide(side),reason:"rakip ayrıldı"},now,acts);}
+        return acts;
+      }
+      if(S.king&&S.king.id===user.id){S.king=null;S.streak=0;feed(name+" tahttan indi");}
+      return acts;
+    }
+    if(S.phase!=="playing") return acts;
+    const side=S.turn,p=S.players[side];
+    if(!p||p.id!==user.id) return acts;                  // sırası olmayan oyuncunun ve seyircinin hamlesi sayılmaz
+    const r=resolvePath(S.board,side,cmd.sq,S.chain);
+    if(!r.ok){feed(p.name+": geçersiz hamle ("+cmd.sq.map(s=>sqName(s.r,s.c)).join(" ")+")");return acts;}
+    S.missed[side]=0;feed(p.name+": "+pathText(r.steps));
+    commit(r.steps,now,acts);
+    return acts;
+  }
+  function tick(now){
+    const acts=[];
+    if(S.phase==="ended"&&now>=S.nextAt){
+      S.phase="lobby";
+      if(canStart()) startGame(now,acts);
+      else{S.players={white:null,black:null};S.board=initialBoard();S.result=null;acts.push({type:"newGame"});}
+    }else if(S.phase==="playing"&&now>=S.deadline) timeout(now,acts);
+    return acts;
+  }
+  return {S,handle,tick};
+}
+// ===== CANLI YAYIN MOTORU BİTİŞ =====
+
 // ---------- SES EFEKTLERİ (dosya yok, kod ile üretiliyor) ----------
 const SR=22050;
 const B64="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -249,7 +420,7 @@ function ResultBanner({result,onAgain}){
       <Text style={styles.bannerEmoji}>{result.emoji}</Text>
       <Text style={styles.bannerTitle}>{result.title}</Text>
       {!!result.sub&&<Text style={styles.bannerSub}>{result.sub}</Text>}
-      <Pressable onPress={onAgain} style={styles.bannerBtn}><Text style={styles.bannerBtnText}>↻ Tekrar Oyna</Text></Pressable>
+      {!result.noButton&&<Pressable onPress={onAgain} style={styles.bannerBtn}><Text style={styles.bannerBtnText}>↻ Tekrar Oyna</Text></Pressable>}
     </Animated.View>
   </View>;
 }
@@ -283,6 +454,22 @@ export default function App(){
   const blackCount=useMemo(()=>countPieces(board,"black"),[board]);
   const cell=Math.max(0,(boardWidth-4)/8);
   const pvp=mode==="pvp";
+  const live=mode==="live";
+  // ---- Canlı yayın durumu (motor ref içinde; ekran sadece okur) ----
+  const liveRef=useRef(null);
+  const actQ=useRef(Promise.resolve());
+  const fnsRef=useRef({});
+  const [,setTick]=useState(0);
+  const bump=()=>setTick(t=>t+1);
+  const [timeLeft,setTimeLeft]=useState(0);
+  const [showCtl,setShowCtl]=useState(true);
+  const [ttUser,setTtUser]=useState("");
+  const [ttKey,setTtKey]=useState("");
+  const [conn,setConn]=useState({state:"off",msg:"Bağlı değil"});
+  const wsRef=useRef(null),wantRef=useRef(false),retryRef=useRef(0);
+  const [testUser,setTestUser]=useState("ali");
+  const [testText,setTestText]=useState("");
+  const liveS=live&&liveRef.current?liveRef.current.S:null;
   useEffect(()=>{
     if(!result||!result.party){pulse.setValue(0);return;}
     const loop=Animated.loop(Animated.sequence([
@@ -312,8 +499,102 @@ export default function App(){
   }
   function switchMode(m){
     if(m===mode||busy||animationLock.current) return;
+    liveRef.current=m==="live"?createLive():null;
+    actQ.current=Promise.resolve();
     setMode(m);reset(m);
   }
+
+  // ---------- CANLI YAYIN: motor çıktısını ekrana yansıtır ----------
+  async function doAct(a){
+    if(!liveRef.current) return;   // canlı moddan çıkıldıysa bekleyen işleri at
+    if(a.type==="newGame"){reset("live");bump();return;}
+    if(a.type==="play"){
+      await animateSequence(a.startBoard,a.steps,a.side);
+      setBoard(a.endBoard);setMovesCount(n=>n+1);bump();return;
+    }
+    if(a.type==="end"){setResult(a.result);setGameOver(true);bump();}
+  }
+  function runActs(acts){
+    acts.forEach(a=>{actQ.current=actQ.current.then(()=>doAct(a)).catch(()=>{});});
+    bump();
+  }
+  function liveComment(user,text){
+    const E=liveRef.current;if(!E) return;
+    runActs(E.handle(user,text,Date.now()));
+  }
+  function liveTick(){
+    const E=liveRef.current;if(!E) return;
+    const acts=E.tick(Date.now()),S=E.S;
+    if(acts.length) runActs(acts);
+    setTimeLeft(S.phase==="playing"?Math.max(0,Math.ceil((S.deadline-Date.now())/1000)):0);
+  }
+  function liveStatus(){
+    const S=liveRef.current&&liveRef.current.S;
+    if(!S) return "";
+    if(S.phase==="ended"&&S.result) return S.result.title+" "+S.result.sub;
+    if(S.phase==="playing"){
+      const p=S.players[S.turn];
+      const must=S.chain?" Aynı taşla devam: "+sqName(S.chain.r,S.chain.c)+".":rawMoves(S.board,S.turn,null,true).length?" Taş alma zorunlu.":"";
+      return "Sıra "+(p?p.name:"?")+" ("+sideTR(S.turn)+"). Yoruma hamleni yaz, örn: C3 C4."+must;
+    }
+    return S.king?"Kral "+S.king.name+" meydan okuyan bekliyor. Yoruma !katıl yaz.":"Oyuncular bekleniyor. Yoruma !katıl yaz.";
+  }
+  // ---------- CANLI YAYIN: TikTool WebSocket (TikTok yorumlarını okur) ----------
+  function ttMessage(m){
+    const c=extractChat(m);
+    if(c){liveComment(c.user,c.text);return;}
+    if(m&&m.event==="error"){
+      const d=m.data||{};
+      setConn({state:"err",msg:String(d.message||d.error||"Hata").slice(0,80)});
+    }
+    // Hediye olayları (m.event==="gift") sonraki aşamada buradan bağlanacak.
+  }
+  function closeTT(){
+    wantRef.current=false;
+    const ws=wsRef.current;wsRef.current=null;
+    if(ws){try{ws.close();}catch(e){}}
+    setConn({state:"off",msg:"Bağlı değil"});
+  }
+  function openTT(u,k){
+    setConn({state:"connecting",msg:"Bağlanıyor..."});
+    let ws;
+    try{ws=new WebSocket("wss://api.tik.tools?uniqueId="+encodeURIComponent(u)+"&apiKey="+encodeURIComponent(k));}
+    catch(e){setConn({state:"err",msg:"Bağlantı açılamadı"});return;}
+    wsRef.current=ws;
+    ws.onopen=()=>{retryRef.current=0;setConn({state:"on",msg:"Bağlı: @"+u});};
+    ws.onmessage=e=>{let m;try{m=JSON.parse(e.data);}catch(_){return;}fnsRef.current.ttMessage&&fnsRef.current.ttMessage(m);};
+    ws.onerror=()=>{};
+    ws.onclose=()=>{
+      if(wsRef.current!==ws) return;
+      if(!wantRef.current){setConn({state:"off",msg:"Bağlı değil"});return;}
+      retryRef.current++;
+      if(retryRef.current>6){wantRef.current=false;setConn({state:"err",msg:"Bağlanamadı. Kullanıcı adı canlı yayında mı, anahtar doğru mu?"});return;}
+      setConn({state:"connecting",msg:"Koptu, yeniden deneniyor ("+retryRef.current+"/6)"});
+      setTimeout(()=>{if(wantRef.current&&wsRef.current===ws) openTT(u,k);},2000*retryRef.current);
+    };
+  }
+  function connectTT(){
+    const u=ttUser.trim().replace(/^@/,""),k=ttKey.trim();
+    if(!u||!k){setConn({state:"err",msg:"Kullanıcı adı ve anahtar gerekli"});return;}
+    closeTT();wantRef.current=true;retryRef.current=0;openTT(u,k);
+  }
+  function sendTest(){
+    if(!testText.trim()) return;
+    liveComment({id:norm(testUser)||"test",name:testUser.trim()||"test"},testText);
+    setTestText("");
+  }
+  function quickDemo(){
+    liveComment({id:"ali",name:"Ali"},"!katıl");
+    liveComment({id:"veli",name:"Veli"},"!katıl");
+  }
+  fnsRef.current={liveTick,ttMessage};
+  useEffect(()=>{
+    if(!live) return;
+    const id=setInterval(()=>{fnsRef.current.liveTick&&fnsRef.current.liveTick();},500);
+    return()=>clearInterval(id);
+  },[live]);
+  useEffect(()=>{if(!live) closeTT();},[live]);
+  useEffect(()=>()=>{wantRef.current=false;const ws=wsRef.current;wsRef.current=null;if(ws){try{ws.close();}catch(e){}}},[]);
   function finishCheck(b){
     if(!countPieces(b,"white")||!legalMoves(b,"white").length){setStatus(pvp?"Oyun bitti. Siyah kazandı! 🎉":"Oyun bitti. Yapay zekâ kazandı!");setResult(winResult("black"));setGameOver(true);return true;}
     if(!countPieces(b,"black")||!legalMoves(b,"black").length){setStatus(pvp?"Oyun bitti. Beyaz kazandı! 🎉":"Tebrikler! Oyunu kazandın!");setResult(winResult("white"));setGameOver(true);return true;}
@@ -372,6 +653,7 @@ export default function App(){
   }
 
   async function tapSquare(r,c){
+    if(live) return;   // canlı modda taşları yayıncı değil izleyiciler oynatır
     if((!pvp&&turn!=="white")||busy||gameOver||animationLock.current)return;
     const piece=board[r][c],target=legal.find(m=>m.to.r===r&&m.to.c===c);
     if(selected&&target){
@@ -408,7 +690,7 @@ export default function App(){
 
   return <SafeAreaView style={styles.safe}>
     <StatusBar barStyle="light-content"/>
-    <ScrollView contentContainerStyle={styles.container}>
+    <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
       <View style={styles.header}>
         <View><Text style={styles.eyebrow}>STRATEJİ • ZEKA • SABIR</Text><Text style={styles.title}>TÜRK DAMASI</Text></View>
         <View style={styles.headerBtns}>
@@ -420,17 +702,23 @@ export default function App(){
         <View style={styles.modeRow}>
           <Pressable onPress={()=>switchMode("ai")} style={[styles.modeBtn,!pvp&&styles.levelActive]}><Text style={[styles.levelText,!pvp&&styles.levelTextActive]}>🤖 Yapay Zekâ</Text></Pressable>
           <Pressable onPress={()=>switchMode("pvp")} style={[styles.modeBtn,pvp&&styles.levelActive]}><Text style={[styles.levelText,pvp&&styles.levelTextActive]}>👥 2 Kişi</Text></Pressable>
+          <Pressable onPress={()=>switchMode("live")} style={[styles.modeBtn,live&&styles.levelActive]}><Text style={[styles.levelText,live&&styles.levelTextActive]}>📺 Canlı</Text></Pressable>
         </View>
-        {pvp?<View><Text style={styles.heroLabel}>MOD</Text><Text style={styles.heroName}>👥 İki Kişilik Oyun</Text><Text style={styles.levelHint}>Aynı telefonda sırayla oynayın. Beyaz alttan başlar.</Text></View>:<>
+        {live&&liveS?<View>
+          <Text style={styles.heroLabel}>📺 CANLI • KRAL TAHTI</Text>
+          <Text style={styles.heroName} numberOfLines={1}>{liveS.king?"👑 "+liveS.king.name+(liveS.streak>1?" • "+liveS.streak+" seri":""):"👑 Tahtta kimse yok"}</Text>
+          <Text style={styles.levelHint}>Katıl: !katıl • Hamle: C3 C4 • Çoklu alma: C3 E3 G3 • Çık: !çık</Text>
+          <Text style={styles.levelHint} numberOfLines={2}>Sırada ({liveS.queue.length}): {liveS.queue.slice(0,5).map(q=>q.name).join(", ")||"kimse yok"}</Text>
+        </View>:pvp?<View><Text style={styles.heroLabel}>MOD</Text><Text style={styles.heroName}>👥 İki Kişilik Oyun</Text><Text style={styles.levelHint}>Aynı telefonda sırayla oynayın. Beyaz alttan başlar.</Text></View>:<>
         <View><Text style={styles.heroLabel}>RAKİBİN</Text><Text style={styles.heroName}>🤖 Yapay Zekâ</Text></View>
         <View style={styles.levelWrap}>{levels.map(l=><Pressable key={l} onPress={()=>{if(!busy&&turn==="white"&&!chainActive){setDifficulty(l);setStatus("Zorluk "+l+" seçildi.");}}} style={[styles.level,difficulty===l&&styles.levelActive]}><Text style={[styles.levelText,difficulty===l&&styles.levelTextActive]}>{l}</Text></Pressable>)}</View>
         <Text style={styles.levelHint}>Seviye: {difficulty} • {levelConfig[difficulty].depth} hamle derinliğinde analiz</Text>
         </>}
       </View>
       <View style={styles.scoreRow}>
-        <View style={styles.scoreCard}><Text style={styles.scoreLabel}>{pvp?"OYUNCU 1 • BEYAZ":"SEN • BEYAZ"}</Text><Text style={styles.scoreNumber}>{whiteCount}</Text><Text style={styles.scoreSub}>taş kaldı</Text></View>
-        <View style={styles.turnPill}><Text style={styles.turnText}>{pvp?(turn==="white"?"SIRA BEYAZDA":"SIRA SİYAHTA"):busy?"RAKİP DÜŞÜNÜYOR":turn==="white"?"SIRA SENDE":"RAKİPTE"}</Text><Text style={styles.turnDot}>●</Text></View>
-        <View style={styles.scoreCard}><Text style={styles.scoreLabel}>{pvp?"OYUNCU 2 • SİYAH":"YAPAY ZEKÂ • SİYAH"}</Text><Text style={styles.scoreNumber}>{blackCount}</Text><Text style={styles.scoreSub}>taş kaldı</Text></View>
+        <View style={styles.scoreCard}><Text numberOfLines={1} style={styles.scoreLabel}>{live?((liveS&&liveS.players.white?liveS.players.white.name:"—")+" • BEYAZ"):pvp?"OYUNCU 1 • BEYAZ":"SEN • BEYAZ"}</Text><Text style={styles.scoreNumber}>{whiteCount}</Text><Text style={styles.scoreSub}>taş kaldı</Text></View>
+        <View style={styles.turnPill}><Text style={styles.turnText}>{live?(liveS&&liveS.phase==="playing"?"⏱ "+timeLeft+" SN • "+(liveS.turn==="white"?"BEYAZ":"SİYAH"):"BEKLİYOR"):pvp?(turn==="white"?"SIRA BEYAZDA":"SIRA SİYAHTA"):busy?"RAKİP DÜŞÜNÜYOR":turn==="white"?"SIRA SENDE":"RAKİPTE"}</Text><Text style={styles.turnDot}>●</Text></View>
+        <View style={styles.scoreCard}><Text numberOfLines={1} style={styles.scoreLabel}>{live?((liveS&&liveS.players.black?liveS.players.black.name:"—")+" • SİYAH"):pvp?"OYUNCU 2 • SİYAH":"YAPAY ZEKÂ • SİYAH"}</Text><Text style={styles.scoreNumber}>{blackCount}</Text><Text style={styles.scoreSub}>taş kaldı</Text></View>
       </View>
       <View style={styles.boardOuter}>
         <View style={styles.boardRow}>
@@ -442,6 +730,8 @@ export default function App(){
             const shade=(isLight?LIGHT_SHADES:DARK_SHADES)[(r*3+c*5)%4];
             const isMovingSource=animating?.from.r===r&&animating?.from.c===c;
             return <Pressable key={c} onPress={()=>tapSquare(r,c)} style={[styles.square,{backgroundColor:shade},isSelected&&styles.selectedSquare,isLegal&&styles.legalSquare]}>
+              {live&&c===0&&<Text style={[styles.coord,styles.coordNum,{color:isLight?"#5a3d1f":"#f0dcc0"}]}>{8-r}</Text>}
+              {live&&r===7&&<Text style={[styles.coord,styles.coordLet,{color:isLight?"#5a3d1f":"#f0dcc0"}]}>{FILES[c]}</Text>}
               {isLast&&<View pointerEvents="none" style={styles.lastOverlay}/>}
               {piece&&!isMovingSource&&<Piece side={piece.side} king={piece.king} selected={isSelected} glow={result&&result.party&&result.winner===piece.side?pulse:null}/>}
               {isLegal&&!piece&&<View style={[styles.moveDot,legalMove.captured.length>0&&styles.captureDot]}/>}
@@ -455,13 +745,38 @@ export default function App(){
         </View>
         </View>
       </View>
-      <View style={styles.statusBox}><Text style={styles.statusIcon}>✦</Text><Text style={styles.statusText}>{status}</Text></View>
+      <View style={styles.statusBox}><Text style={styles.statusIcon}>✦</Text><Text style={styles.statusText}>{live?liveStatus():status}</Text></View>
+      {live&&liveS&&<View style={styles.feedBox}>
+        {liveS.feed.length?liveS.feed.map((f,i)=><Text key={i} numberOfLines={1} style={[styles.feedText,i===0&&styles.feedTop]}>{f}</Text>):<Text style={styles.feedText}>Henüz hareket yok. Yoruma !katıl yazın.</Text>}
+      </View>}
+      {live&&<View style={styles.ctl}>
+        <Pressable onPress={()=>setShowCtl(v=>!v)} style={styles.ctlHead}><Text style={styles.ctlTitle}>⚙ BAĞLANTI / TEST {showCtl?"▲":"▼"}</Text></Pressable>
+        {showCtl&&<View>
+          <Text style={styles.ctlLabel}>TikTok kullanıcı adın (@ olmadan)</Text>
+          <TextInput value={ttUser} onChangeText={setTtUser} autoCapitalize="none" autoCorrect={false} placeholder="kullaniciadi" placeholderTextColor="#6f8176" style={styles.input}/>
+          <Text style={styles.ctlLabel}>TikTool API anahtarı (yazarken gizlenir)</Text>
+          <TextInput value={ttKey} onChangeText={setTtKey} secureTextEntry autoCapitalize="none" autoCorrect={false} placeholder="anahtar" placeholderTextColor="#6f8176" style={styles.input}/>
+          <View style={styles.ctlRow}>
+            <Pressable onPress={connectTT} style={styles.ctlBtn}><Text style={styles.ctlBtnText}>Bağlan</Text></Pressable>
+            <Pressable onPress={closeTT} style={[styles.ctlBtn,styles.ctlBtnAlt]}><Text style={styles.ctlBtnText}>Kes</Text></Pressable>
+          </View>
+          <Text style={[styles.ctlStatus,conn.state==="on"&&styles.ctlOn,conn.state==="err"&&styles.ctlErr]}>● {conn.msg}</Text>
+          <Text style={styles.ctlLabel}>TEST: sahte yorum gönder (yayın olmadan dene)</Text>
+          <View style={styles.ctlRow}>
+            <TextInput value={testUser} onChangeText={setTestUser} autoCapitalize="none" autoCorrect={false} placeholder="kullanıcı" placeholderTextColor="#6f8176" style={[styles.input,{flex:1}]}/>
+            <TextInput value={testText} onChangeText={setTestText} autoCapitalize="none" autoCorrect={false} onSubmitEditing={sendTest} placeholder="C3 C4 veya !katıl" placeholderTextColor="#6f8176" style={[styles.input,{flex:2}]}/>
+            <Pressable onPress={sendTest} style={styles.ctlBtn}><Text style={styles.ctlBtnText}>Gönder</Text></Pressable>
+          </View>
+          <Pressable onPress={quickDemo} style={[styles.ctlBtn,{marginTop:8}]}><Text style={styles.ctlBtnText}>Hızlı deneme: Ali ve Veli katılsın</Text></Pressable>
+          <Text style={styles.ctlHint}>Yayına geçmeden önce bu paneli kapat.</Text>
+        </View>}
+      </View>}
       <View style={styles.infoRow}>
         <View style={styles.infoCard}><Text style={styles.infoTitle}>TURLAR</Text><Text style={styles.infoValue}>{movesCount}</Text></View>
         <View style={styles.infoCard}><Text style={styles.infoTitle}>ZORUNLU ALMA</Text><Text style={styles.infoValue}>Açık</Text></View>
         <View style={styles.infoCard}><Text style={styles.infoTitle}>TAHTA</Text><Text style={styles.infoValue}>8 × 8</Text></View>
       </View>
-      <View style={styles.rules}>
+      {!live&&<View style={styles.rules}>
         <Text style={styles.rulesTitle}>NASIL OYNANIR?</Text>
         <Text style={styles.ruleText}>• Yapay zekâya karşı beyaz taşlarla sen oynarsın; 2 kişi modunda telefonu sırayla verirsiniz, Beyaz başlar. Taşlar ileri ve yana bir kare gider.</Text>
         <Text style={styles.ruleText}>• Rakip taşın üzerinden ileri veya yana atlayarak taş alırsın (geri alma sadece vezirde). Taş alma zorunludur.</Text>
@@ -470,7 +785,7 @@ export default function App(){
         <Text style={styles.ruleText}>• Son sıraya ulaşan taş vezir olur ve yatay/dikey istediği kadar ilerler.</Text>
         <Text style={styles.ruleText}>• Rakibin tüm taşlarını al veya hamlesiz bırak.</Text>
         <Text style={styles.ruleText}>• 100 hamle boyunca taş alınmaz ve hiçbir taş ileri gitmezse oyun berabere biter.</Text>
-      </View>
+      </View>}
       <Text style={styles.footer}>BAĞIMSIZ TÜRK DAMASI • AKICI HAMLE ANİMASYONU</Text>
     </ScrollView>
   </SafeAreaView>;
@@ -542,5 +857,18 @@ const styles=StyleSheet.create({
   rules:{marginTop:17,backgroundColor:"#172720",borderRadius:14,padding:14,borderWidth:1,borderColor:"#2e4438"},
   rulesTitle:{color:"#e2bd69",fontWeight:"900",fontSize:11,letterSpacing:1.5,marginBottom:8},
   ruleText:{color:"#d3d9ce",fontSize:11,lineHeight:19,marginBottom:3},
-  footer:{textAlign:"center",fontSize:8,color:"#718477",letterSpacing:1.2,marginTop:18}
+  footer:{textAlign:"center",fontSize:8,color:"#718477",letterSpacing:1.2,marginTop:18},
+  coord:{position:"absolute",fontSize:9,fontWeight:"900"},
+  coordNum:{top:1,left:3},coordLet:{bottom:1,right:3},
+  feedBox:{marginTop:10,backgroundColor:"#172720",borderRadius:12,padding:10,borderWidth:1,borderColor:"#2e4438"},
+  feedText:{color:"#a9b5a8",fontSize:11,lineHeight:17},feedTop:{color:"#f3ead7",fontWeight:"800"},
+  ctl:{marginTop:12,backgroundColor:"#1a2c25",borderRadius:14,padding:12,borderWidth:1,borderColor:"#344a3d"},
+  ctlHead:{paddingVertical:2},ctlTitle:{color:"#e2bd69",fontWeight:"900",fontSize:11,letterSpacing:1.2},
+  ctlLabel:{color:"#aeb9aa",fontSize:10,marginTop:10,marginBottom:4},
+  input:{backgroundColor:"#101d19",borderWidth:1,borderColor:"#3c5143",borderRadius:10,color:"#f3ead7",paddingVertical:8,paddingHorizontal:10,fontSize:13},
+  ctlRow:{flexDirection:"row",gap:8,alignItems:"center",marginTop:8},
+  ctlBtn:{backgroundColor:"#c49b4a",paddingVertical:10,paddingHorizontal:14,borderRadius:10,alignItems:"center"},
+  ctlBtnAlt:{backgroundColor:"#3c5143"},ctlBtnText:{color:"#17231d",fontWeight:"900",fontSize:12},
+  ctlStatus:{color:"#c8d0c3",fontSize:11,marginTop:8},ctlOn:{color:"#9bff8f"},ctlErr:{color:"#ff9b8f"},
+  ctlHint:{color:"#8fa08f",fontSize:10,marginTop:10}
 });
